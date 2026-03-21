@@ -36,6 +36,7 @@ type DayDetailMode = 'list' | 'timeline';
 
 const STORAGE_KEY = '@usccompanion:events:v1';
 const OLD_STORAGE_KEY = '@usccompanion:scheduleItems';
+const ASSIGNMENTS_STORAGE_KEY = '@usccompanion:assignments:v1';
 
 const USC_CARDINAL = '#990000';
 const USC_GOLD = '#FFCC00';
@@ -299,7 +300,7 @@ function getMonthGrid(cursor: Date): { dateKey: string; date: Date; inMonth: boo
   return days;
 }
 
-export const HomeScreen: React.FC = () => {
+export const HomeScreen: React.FC<{ onOpenAssignments?: () => void }> = ({ onOpenAssignments }) => {
   const today = useMemo(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -334,13 +335,15 @@ export const HomeScreen: React.FC = () => {
   useEffect(() => {
     const load = async () => {
       try {
-        const [rawNew, rawOld] = await Promise.all([
+        const [rawNew, rawOld, rawAssignments] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEY),
           AsyncStorage.getItem(OLD_STORAGE_KEY),
+          AsyncStorage.getItem(ASSIGNMENTS_STORAGE_KEY),
         ]);
-
+        console.log('RAW ASSIGNMENTS:', rawAssignments);
+  
         let parsed: UscEvent[] | null = null;
-
+  
         if (rawNew) {
           const maybe = JSON.parse(rawNew) as any[];
           parsed = (Array.isArray(maybe) ? maybe : []).map((it) => {
@@ -370,7 +373,6 @@ export const HomeScreen: React.FC = () => {
             } satisfies UscEvent;
           });
         } else if (rawOld) {
-          // Best-effort migration from the earlier prototype.
           const legacyItems = JSON.parse(rawOld) as Array<{
             id: string;
             title: string;
@@ -396,14 +398,35 @@ export const HomeScreen: React.FC = () => {
             };
           });
         }
-
-        const expanded = parsed ? expandRecurringEvents(parsed) : [];
-
-        // Normalize storage: if the stored list contains recurring templates, persist expanded.
-        if (parsed && parsed !== expanded) {
-          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(expanded));
+  
+        // Merge assignments from AssignmentTracker into calendar
+        if (rawAssignments) {
+          const assignmentList = JSON.parse(rawAssignments) as Array<{
+            id: string;
+            title: string;
+            course: string;
+            dueDate: string;
+            priority: string;
+            completed: boolean;
+          }>;
+          if (Array.isArray(assignmentList)) {
+            const assignmentEvents: UscEvent[] = assignmentList.map((a) => ({
+              id: `tracker__${a.id}`,
+              title: `${a.title} (${a.course})`,
+              type: 'assignment' as EventType,
+              date: a.dueDate,
+              startTime: '23:59',
+              endTime: '23:59',
+              location: '',
+              completed: a.completed,
+              repeat: 'none',
+              repeatUntil: a.dueDate,
+            }));
+            parsed = [...(parsed ?? []), ...assignmentEvents];
+          }
         }
-
+  
+        const expanded = parsed ? expandRecurringEvents(parsed) : [];
         setEvents(expanded);
       } catch (e) {
         console.warn('Failed to load events', e);
@@ -413,7 +436,7 @@ export const HomeScreen: React.FC = () => {
         hydratedRef.current = true;
       }
     };
-
+  
     load();
   }, []);
 
@@ -421,7 +444,9 @@ export const HomeScreen: React.FC = () => {
     if (!hydratedRef.current) return;
     const save = async () => {
       try {
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+        // Only save non-tracker events to avoid polluting main storage
+        const eventsToSave = events.filter(e => !e.id.startsWith('tracker__'));
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(eventsToSave));
       } catch (e) {
         console.warn('Failed to save events', e);
       }
@@ -808,6 +833,17 @@ export const HomeScreen: React.FC = () => {
       </View>
 
       <View style={styles.controlArea}>
+        <View style={styles.assignmentsQuickRow}>
+          <TouchableOpacity
+            style={styles.assignmentsQuickCard}
+            onPress={onOpenAssignments}
+            activeOpacity={0.9}
+          >
+            <View style={styles.assignmentsQuickLeftBar} />
+            <Text style={styles.assignmentsQuickTitle}>Assignments</Text>
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.segmented}>
           <TouchableOpacity
             style={[styles.segment, viewMode === 'week' && { backgroundColor: USC_CARDINAL }]}
@@ -1163,6 +1199,31 @@ const styles = StyleSheet.create({
   controlArea: {
     paddingHorizontal: 14,
     paddingTop: 14,
+  },
+  assignmentsQuickRow: {
+    marginBottom: 12,
+  },
+  assignmentsQuickCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#141414',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  assignmentsQuickLeftBar: {
+    width: 6,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: USC_CARDINAL,
+    marginRight: 12,
+  },
+  assignmentsQuickTitle: {
+    color: '#ffffff',
+    fontWeight: '900',
+    fontSize: 15,
   },
   segmented: {
     flexDirection: 'row',
